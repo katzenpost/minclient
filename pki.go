@@ -151,20 +151,32 @@ func (p *pki) worker() {
 				continue
 			}
 
-			d, _, err := p.c.cfg.PKIClient.Get(pkiCtx, epoch)
-			select {
-			case <-pkiCtx.Done():
-				// Canceled mid-fetch.
-				return
-			default:
-			}
-			if err != nil {
-				p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
-				if err == cpki.ErrNoDocument {
+			var err error
+			d := &cpki.Document{}
+			if p.c.conn.isConnected {
+				rawDoc := []byte{}
+				rawDoc, err = p.c.conn.getConsensus(epoch)
+				if err != nil {
+					p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
 					p.failedFetches[epoch] = err
+					continue
 				}
-				continue
+				doc, err := p.c.cfg.PKIClient.Deserialize(rawDoc)
+				if err != nil {
+					p.failedFetches[epoch] = err
+					continue
+				}
+				d = doc
+			} else {
+				d, _, err = p.c.cfg.PKIClient.Get(pkiCtx, epoch)
+				select {
+				case <-pkiCtx.Done():
+					// Canceled mid-fetch.
+					return
+				default:
+				}
 			}
+
 			p.docs.Store(epoch, d)
 			didUpdate = true
 		}

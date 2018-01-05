@@ -53,15 +53,19 @@ type connection struct {
 	sync.Mutex
 	worker.Worker
 
-	c   *Client
-	log *logging.Logger
+	session *wire.Session
+	c       *Client
+	log     *logging.Logger
 
 	pkiEpoch   uint64
 	descriptor *cpki.MixDescriptor
 	pkiFetchCh chan interface{}
 
-	fetchCh     chan interface{}
-	sendCh      chan *connSendCtx
+	fetchCh chan interface{}
+	sendCh  chan *connSendCtx
+
+	consensusCh chan []byte
+
 	retryDelay  time.Duration
 	isConnected bool
 }
@@ -254,6 +258,7 @@ func (c *connection) doConnect(dialCtx context.Context) {
 
 func (c *connection) onTCPConn(conn net.Conn) {
 	const handshakeTimeout = 1 * time.Minute
+	var err error
 
 	defer func() {
 		c.log.Debugf("TCP connection closed.")
@@ -267,24 +272,24 @@ func (c *connection) onTCPConn(conn net.Conn) {
 		AuthenticationKey: c.c.cfg.LinkKey,
 		RandomReader:      rand.Reader,
 	}
-	w, err := wire.NewSession(cfg, true)
+	c.session, err = wire.NewSession(cfg, true)
 	if err != nil {
 		c.log.Errorf("Failed to allocate session: %v", err)
 		return
 	}
-	defer w.Close()
+	defer c.session.Close()
 
 	// Bind the session to the conn, handshake, authenticate.
 	conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	if err = w.Initialize(conn); err != nil {
+	if err = c.session.Initialize(conn); err != nil {
 		c.log.Errorf("Handshake failed: %v", err)
 		return
 	}
 	c.log.Debugf("Handshake completed.")
 	conn.SetDeadline(time.Time{})
-	c.c.pki.setClockSkew(int64(w.ClockSkew().Seconds()))
+	c.c.pki.setClockSkew(int64(c.session.ClockSkew().Seconds()))
 
-	c.onWireConn(w)
+	c.onWireConn(c.session)
 }
 
 func (c *connection) onWireConn(w *wire.Session) {
@@ -465,6 +470,10 @@ func (c *connection) onWireConn(w *wire.Session) {
 			seq++
 
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
+		case *commands.Consensus:
+			c.log.Debugf("Consensus: payload len %d", len(cmd.Payload))
+			// XXX todo: fix me
+			c.consensusCh <- cmd.Payload
 		default:
 			c.log.Errorf("Received unexpected command: %T", cmd)
 			return
@@ -532,6 +541,21 @@ func (c *connection) sendPacket(pkt []byte) error {
 	return <-errCh
 }
 
+func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
+	getConsensusCmd := &commands.GetConsensus{
+		Epoch: epoch,
+	}
+	if c.session == nil {
+		return nil, errors.New("session is nil")
+	}
+	err := c.session.SendCommand(getConsensusCmd)
+	if err != nil {
+		return nil, err
+	}
+	d := <-c.consensusCh
+	return d, nil
+}
+
 func newConnection(c *Client) *connection {
 	k := new(connection)
 	k.c = c
@@ -539,6 +563,7 @@ func newConnection(c *Client) *connection {
 	k.pkiFetchCh = make(chan interface{}, 1)
 	k.fetchCh = make(chan interface{}, 1)
 	k.sendCh = make(chan *connSendCtx)
+	k.consensusCh = make(chan []byte, 0)
 
 	k.Go(k.connectWorker)
 	return k
