@@ -491,7 +491,7 @@ func (c *connection) onWireConn(w *wire.Session) {
 
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
 		case *commands.Consensus:
-			c.log.Debugf("Consensus: payload len %d", len(cmd.Payload))
+			c.log.Debugf("Consensus command wire protocol response received: payload len %d", len(cmd.Payload))
 			if consensusReplyCh != nil {
 				consensusReplyCh <- cmd.Payload
 			}
