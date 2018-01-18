@@ -563,13 +563,12 @@ func (c *connection) sendPacket(pkt []byte) error {
 }
 
 func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
+	c.log.Debug("connection.getConsensus")
 	c.Lock()
 	if !c.isConnected {
 		c.Unlock()
 		return nil, ErrNotConnected
 	}
-	defer c.Unlock()
-
 	errCh := make(chan error)
 	replyCh := make(chan []byte)
 	c.getConsensusCh <- &getConsensusCtx{
@@ -580,6 +579,7 @@ func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
 		},
 	}
 	c.log.Debugf("Enqueued packet with GetConsensus command for send.")
+	c.Unlock()
 	doc := <-replyCh
 	return doc, nil
 }

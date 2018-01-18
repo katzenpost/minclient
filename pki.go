@@ -154,6 +154,7 @@ func (p *pki) worker() {
 			var err error
 			var d *cpki.Document
 			if p.c.conn.isConnected {
+				p.log.Debugf("sending GET_CONSENSUS command...")
 				var rawDoc []byte
 				rawDoc, err = p.c.conn.getConsensus(epoch)
 				if err != nil {
