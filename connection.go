@@ -472,7 +472,6 @@ func (c *connection) onWireConn(w *wire.Session) {
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
 		case *commands.Consensus:
 			c.log.Debugf("Consensus: payload len %d", len(cmd.Payload))
-			// XXX todo: fix me
 			c.consensusCh <- cmd.Payload
 		default:
 			c.log.Errorf("Received unexpected command: %T", cmd)
@@ -542,6 +541,13 @@ func (c *connection) sendPacket(pkt []byte) error {
 }
 
 func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
+	c.Lock()
+	if !c.isConnected {
+		c.Unlock()
+		return nil, ErrNotConnected
+	}
+	defer c.Unlock()
+
 	getConsensusCmd := &commands.GetConsensus{
 		Epoch: epoch,
 	}
@@ -553,6 +559,7 @@ func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
 		return nil, err
 	}
 	d := <-c.consensusCh
+
 	return d, nil
 }
 

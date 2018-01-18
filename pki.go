@@ -152,9 +152,9 @@ func (p *pki) worker() {
 			}
 
 			var err error
-			d := &cpki.Document{}
+			var d *cpki.Document
 			if p.c.conn.isConnected {
-				rawDoc := []byte{}
+				var rawDoc []byte
 				rawDoc, err = p.c.conn.getConsensus(epoch)
 				if err != nil {
 					p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
