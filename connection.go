@@ -39,6 +39,11 @@ const (
 )
 
 var (
+
+	// ErrGetConsensusCancelled is the error returned when we cancel a
+	// GetConsensus wire protocol command.
+	ErrGetConsensusCancelled = errors.New("getConsensus failure, context cancellation received.")
+
 	// ErrNotConnected is the error returned when an operation fails due to the
 	// client not currently being connected to the Provider.
 	ErrNotConnected = errors.New("minclient/conn: not connected to the Provider")
@@ -71,7 +76,7 @@ type connection struct {
 }
 
 type getConsensusCtx struct {
-	replyCh chan []byte
+	replyCh chan *commands.Consensus
 	epoch   uint64
 	doneFn  func(error)
 }
@@ -493,7 +498,7 @@ func (c *connection) onWireConn(w *wire.Session) {
 		case *commands.Consensus:
 			c.log.Debugf("Consensus command received:\n payload len %d", len(cmd.Payload))
 			if c.consensusCtx != nil {
-				c.consensusCtx.replyCh <- cmd.Payload
+				c.consensusCtx.replyCh <- cmd
 				c.consensusCtx = nil
 			} else {
 				c.log.Debug("Consensus command received without asking for it.")
@@ -565,7 +570,13 @@ func (c *connection) sendPacket(pkt []byte) error {
 	return <-errCh
 }
 
-func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
+// getConsensus returns either a Consensus command struct or an error
+// if however the Consensus command struct was received, it's payload
+// MAY be nil and it's ErrorCode field non-zero... to express one
+// of two failures:
+//    1. consensus not found
+//    2. consensus gone
+func (c *connection) getConsensus(pkiCtx context.Context, epoch uint64) (*commands.Consensus, error) {
 	c.log.Debug("<<<<<<<<<< DEBUG: connection.getConsensus")
 	c.Lock()
 	defer c.Unlock()
@@ -574,7 +585,7 @@ func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
 		return nil, ErrNotConnected
 	}
 	errCh := make(chan error)
-	replyCh := make(chan []byte)
+	replyCh := make(chan *commands.Consensus)
 	c.getConsensusCh <- &getConsensusCtx{
 		replyCh: replyCh,
 		epoch:   epoch,
@@ -582,14 +593,25 @@ func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
 			errCh <- err
 		},
 	}
-	c.log.Debugf("Enqueued packet with GetConsensus command for send.")
+	c.log.Debug("Enqueued packet with GetConsensus command for send.")
 
-	err := <-errCh
-	if err != nil {
-		return nil, err
+	for {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				c.log.Debugf("GET_CONSENSUS failure: %s", err)
+				return nil, err
+			}
+		case consensusCmd := <-replyCh:
+			return consensusCmd, nil
+		case <-pkiCtx.Done():
+			// Canceled mid-fetch.
+			return nil, ErrGetConsensusCancelled
+		}
 	}
-	doc := <-replyCh
-	return doc, nil
+
+	// NOT REACHED
+	return nil, nil
 }
 
 func newConnection(c *Client) *connection {
