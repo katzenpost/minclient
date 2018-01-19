@@ -53,9 +53,8 @@ type connection struct {
 	sync.Mutex
 	worker.Worker
 
-	session *wire.Session
-	c       *Client
-	log     *logging.Logger
+	c   *Client
+	log *logging.Logger
 
 	pkiEpoch   uint64
 	descriptor *cpki.MixDescriptor
@@ -348,7 +347,7 @@ func (c *connection) onWireConn(w *wire.Session) {
 
 	var fetchDelay time.Duration
 	var seq uint32
-	var consensusReplyCh chan []byte
+	var consensusCtx *getConsensusCtx
 	nrReqs, nrResps := 0, 0
 	for {
 		var rawCmd commands.Command
@@ -360,8 +359,8 @@ func (c *connection) onWireConn(w *wire.Session) {
 		case <-c.fetchCh:
 			doFetch = true
 		case ctx := <-c.getConsensusCh:
-			c.log.Debugf("Sending GetConsensus wire command to retrieve PKI document.")
-			consensusReplyCh = ctx.replyCh
+			c.log.Debugf("Sending GetConsensus wire protocol command to retrieve PKI document.")
+			consensusCtx = ctx
 			cmd := &commands.GetConsensus{
 				Epoch: ctx.epoch,
 			}
@@ -492,8 +491,8 @@ func (c *connection) onWireConn(w *wire.Session) {
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
 		case *commands.Consensus:
 			c.log.Debugf("Consensus command wire protocol response received: payload len %d", len(cmd.Payload))
-			if consensusReplyCh != nil {
-				consensusReplyCh <- cmd.Payload
+			if consensusCtx != nil {
+				consensusCtx.replyCh <- cmd.Payload
 			}
 		default:
 			c.log.Errorf("Received unexpected command: %T", cmd)
