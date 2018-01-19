@@ -18,6 +18,7 @@ package minclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -151,33 +152,14 @@ func (p *pki) worker() {
 				continue
 			}
 
-			var err error
-			var d *cpki.Document
-			if p.c.conn.isConnected {
-				p.log.Debugf("sending GET_CONSENSUS command...")
-				var rawDoc []byte
-				rawDoc, err = p.c.conn.getConsensus(epoch)
-				if err != nil {
-					p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
+			d, err := p.getDocument(epoch, pkiCtx)
+			if err != nil {
+				p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
+				if err == cpki.ErrNoDocument {
 					p.failedFetches[epoch] = err
-					continue
 				}
-				doc, err := p.c.cfg.PKIClient.Deserialize(rawDoc)
-				if err != nil {
-					p.failedFetches[epoch] = err
-					continue
-				}
-				d = doc
-			} else {
-				d, _, err = p.c.cfg.PKIClient.Get(pkiCtx, epoch)
-				select {
-				case <-pkiCtx.Done():
-					// Canceled mid-fetch.
-					return
-				default:
-				}
+				continue
 			}
-
 			p.docs.Store(epoch, d)
 			didUpdate = true
 		}
@@ -196,6 +178,45 @@ func (p *pki) worker() {
 	}
 
 	// NOTREACHED
+}
+
+func (p *pki) getDocument(epoch uint64, pkiCtx context.Context) (*cpki.Document, error) {
+	p.log.Debug("getDocument")
+	var d *cpki.Document
+	var err error
+
+	if p.c.conn.isConnected {
+		p.log.Debugf("Fetching PKI doc via crypto wire protocol.")
+		var rawDoc []byte
+		rawDoc, err = p.c.conn.getConsensus(epoch)
+		if err != nil {
+			p.log.Warningf("Failed to fetch PKI doc over wire protocol for epoch %v: %v", epoch, err)
+			return nil, err
+		}
+		doc, err := p.c.cfg.PKIClient.Deserialize(rawDoc)
+		if err != nil {
+			p.log.Debug("WTF. strange, we failed to deserialized a PKI doc we got over the wire.")
+			return nil, err
+		}
+		select {
+		case <-pkiCtx.Done():
+			// Canceled mid-fetch.
+			return nil, errors.New("error: getDocument was cancelled.")
+		default:
+		}
+		d = doc
+	} else {
+		p.log.Debugf("Fetching PKI doc via plain old HTTP.")
+		d, _, err = p.c.cfg.PKIClient.Get(pkiCtx, epoch)
+		select {
+		case <-pkiCtx.Done():
+			// Canceled mid-fetch.
+			return nil, errors.New("error: getDocument was cancelled.")
+		default:
+		}
+	}
+	return d, err
+
 }
 
 func (p *pki) pruneDocuments(now uint64) {

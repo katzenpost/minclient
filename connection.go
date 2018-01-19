@@ -58,11 +58,13 @@ type connection struct {
 
 	pkiEpoch   uint64
 	descriptor *cpki.MixDescriptor
-	pkiFetchCh chan interface{}
 
+	pkiFetchCh     chan interface{}
 	fetchCh        chan interface{}
 	sendCh         chan *connSendCtx
 	getConsensusCh chan *getConsensusCtx
+
+	consensusCtx *getConsensusCtx
 
 	retryDelay  time.Duration
 	isConnected bool
@@ -347,7 +349,6 @@ func (c *connection) onWireConn(w *wire.Session) {
 
 	var fetchDelay time.Duration
 	var seq uint32
-	var consensusCtx *getConsensusCtx
 	nrReqs, nrResps := 0, 0
 	for {
 		var rawCmd commands.Command
@@ -360,7 +361,7 @@ func (c *connection) onWireConn(w *wire.Session) {
 			doFetch = true
 		case ctx := <-c.getConsensusCh:
 			c.log.Debugf("Sending GetConsensus wire protocol command to retrieve PKI document.")
-			consensusCtx = ctx
+			c.consensusCtx = ctx
 			cmd := &commands.GetConsensus{
 				Epoch: ctx.epoch,
 			}
@@ -490,9 +491,12 @@ func (c *connection) onWireConn(w *wire.Session) {
 
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
 		case *commands.Consensus:
-			c.log.Debugf("Consensus command wire protocol response received: payload len %d", len(cmd.Payload))
-			if consensusCtx != nil {
-				consensusCtx.replyCh <- cmd.Payload
+			c.log.Debugf("Consensus command received:\n payload len %d", len(cmd.Payload))
+			if c.consensusCtx != nil {
+				c.consensusCtx.replyCh <- cmd.Payload
+				c.consensusCtx = nil
+			} else {
+				c.log.Debug("Consensus command received without asking for it.")
 			}
 		default:
 			c.log.Errorf("Received unexpected command: %T", cmd)
@@ -562,10 +566,11 @@ func (c *connection) sendPacket(pkt []byte) error {
 }
 
 func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
-	c.log.Debug("connection.getConsensus")
+	c.log.Debug("<<<<<<<<<< DEBUG: connection.getConsensus")
 	c.Lock()
+	defer c.Unlock()
 	if !c.isConnected {
-		c.Unlock()
+		c.log.Debug("WTF, tried to issue getConsensus command before connecting.")
 		return nil, ErrNotConnected
 	}
 	errCh := make(chan error)
@@ -578,7 +583,11 @@ func (c *connection) getConsensus(epoch uint64) ([]byte, error) {
 		},
 	}
 	c.log.Debugf("Enqueued packet with GetConsensus command for send.")
-	c.Unlock()
+
+	err := <-errCh
+	if err != nil {
+		return nil, err
+	}
 	doc := <-replyCh
 	return doc, nil
 }
