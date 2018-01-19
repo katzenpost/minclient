@@ -39,6 +39,11 @@ const (
 )
 
 var (
+
+	// ErrGetConsensusCancelled is the error returned when we cancel a
+	// GetConsensus wire protocol command.
+	ErrGetConsensusCancelled = errors.New("getConsensus failure, context cancellation received.")
+
 	// ErrNotConnected is the error returned when an operation fails due to the
 	// client not currently being connected to the Provider.
 	ErrNotConnected = errors.New("minclient/conn: not connected to the Provider")
@@ -58,12 +63,22 @@ type connection struct {
 
 	pkiEpoch   uint64
 	descriptor *cpki.MixDescriptor
-	pkiFetchCh chan interface{}
 
-	fetchCh     chan interface{}
-	sendCh      chan *connSendCtx
+	pkiFetchCh     chan interface{}
+	fetchCh        chan interface{}
+	sendCh         chan *connSendCtx
+	getConsensusCh chan *getConsensusCtx
+
+	consensusCtx *getConsensusCtx
+
 	retryDelay  time.Duration
 	isConnected bool
+}
+
+type getConsensusCtx struct {
+	replyCh chan *commands.Consensus
+	epoch   uint64
+	doneFn  func(error)
 }
 
 type connSendCtx struct {
@@ -254,6 +269,7 @@ func (c *connection) doConnect(dialCtx context.Context) {
 
 func (c *connection) onTCPConn(conn net.Conn) {
 	const handshakeTimeout = 1 * time.Minute
+	var err error
 
 	defer func() {
 		c.log.Debugf("TCP connection closed.")
@@ -348,6 +364,20 @@ func (c *connection) onWireConn(w *wire.Session) {
 			doFetch = true
 		case <-c.fetchCh:
 			doFetch = true
+		case ctx := <-c.getConsensusCh:
+			c.log.Debugf("Sending GetConsensus wire protocol command to retrieve PKI document.")
+			c.consensusCtx = ctx
+			cmd := &commands.GetConsensus{
+				Epoch: ctx.epoch,
+			}
+			err := w.SendCommand(cmd)
+			ctx.doneFn(err)
+			if err != nil {
+				c.log.Debugf("Failed to send GetConsensus: %v", err)
+				return
+			}
+			c.log.Debugf("Send GetConsensus.")
+			continue
 		case ctx := <-c.sendCh:
 			c.log.Debugf("Dequeued packet for send.")
 			cmd := &commands.SendPacket{
@@ -465,6 +495,14 @@ func (c *connection) onWireConn(w *wire.Session) {
 			seq++
 
 			fetchDelay = fetchMoreInterval // Likewise as with Message...
+		case *commands.Consensus:
+			c.log.Debugf("Consensus command received:\n payload len %d", len(cmd.Payload))
+			if c.consensusCtx != nil {
+				c.consensusCtx.replyCh <- cmd
+				c.consensusCtx = nil
+			} else {
+				c.log.Debug("Consensus command received without asking for it.")
+			}
 		default:
 			c.log.Errorf("Received unexpected command: %T", cmd)
 			return
@@ -532,6 +570,50 @@ func (c *connection) sendPacket(pkt []byte) error {
 	return <-errCh
 }
 
+// getConsensus returns either a Consensus command struct or an error
+// if however the Consensus command struct was received, it's payload
+// MAY be nil and it's ErrorCode field non-zero... to express one
+// of two failures:
+//    1. consensus not found
+//    2. consensus gone
+func (c *connection) getConsensus(pkiCtx context.Context, epoch uint64) (*commands.Consensus, error) {
+	c.log.Debug("<<<<<<<<<< DEBUG: connection.getConsensus")
+	c.Lock()
+	defer c.Unlock()
+	if !c.isConnected {
+		c.log.Debug("WTF, tried to issue getConsensus command before connecting.")
+		return nil, ErrNotConnected
+	}
+	errCh := make(chan error)
+	replyCh := make(chan *commands.Consensus)
+	c.getConsensusCh <- &getConsensusCtx{
+		replyCh: replyCh,
+		epoch:   epoch,
+		doneFn: func(err error) {
+			errCh <- err
+		},
+	}
+	c.log.Debug("Enqueued packet with GetConsensus command for send.")
+
+	for {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				c.log.Debugf("GET_CONSENSUS failure: %s", err)
+				return nil, err
+			}
+		case consensusCmd := <-replyCh:
+			return consensusCmd, nil
+		case <-pkiCtx.Done():
+			// Canceled mid-fetch.
+			return nil, ErrGetConsensusCancelled
+		}
+	}
+
+	// NOT REACHED
+	return nil, nil
+}
+
 func newConnection(c *Client) *connection {
 	k := new(connection)
 	k.c = c
@@ -539,6 +621,7 @@ func newConnection(c *Client) *connection {
 	k.pkiFetchCh = make(chan interface{}, 1)
 	k.fetchCh = make(chan interface{}, 1)
 	k.sendCh = make(chan *connSendCtx)
+	k.getConsensusCh = make(chan *getConsensusCtx)
 
 	k.Go(k.connectWorker)
 	return k

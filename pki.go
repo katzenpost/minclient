@@ -18,13 +18,23 @@ package minclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/katzenpost/core/epochtime"
 	cpki "github.com/katzenpost/core/pki"
+	"github.com/katzenpost/core/wire/commands"
 	"github.com/katzenpost/core/worker"
 	"gopkg.in/op/go-logging.v1"
+)
+
+var (
+	ErrConsensusGone            = errors.New("GetConsensus failure: consensus is gone.")
+	ErrConsensusNotFound        = errors.New("GetConsensus failure: consensus not found.")
+	ErrConsensusDeserialization = errors.New("GetConsensus failure: failed to deserialize consensus.")
+	ErrSendGetConsensus         = errors.New("failure sending the GetConsensus wire protocol command.")
+	ErrUnknownErrorCode         = errors.New("received Consensus command with unkown error-code.")
 )
 
 type pki struct {
@@ -151,16 +161,10 @@ func (p *pki) worker() {
 				continue
 			}
 
-			d, _, err := p.c.cfg.PKIClient.Get(pkiCtx, epoch)
-			select {
-			case <-pkiCtx.Done():
-				// Canceled mid-fetch.
-				return
-			default:
-			}
+			d, err := p.getDocument(epoch, pkiCtx)
 			if err != nil {
 				p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
-				if err == cpki.ErrNoDocument {
+				if err == ErrConsensusGone {
 					p.failedFetches[epoch] = err
 				}
 				continue
@@ -183,6 +187,52 @@ func (p *pki) worker() {
 	}
 
 	// NOTREACHED
+}
+
+// getDocument either returns the desired PKI document or an error
+func (p *pki) getDocument(epoch uint64, pkiCtx context.Context) (*cpki.Document, error) {
+	p.log.Debug("getDocument")
+	var d *cpki.Document
+	var err error
+
+	p.log.Debug("Fetching PKI doc via crypto wire protocol.")
+	consensusCmd, err := p.c.conn.getConsensus(pkiCtx, epoch)
+	if err != nil {
+		p.log.Debugf("Failed to fetch PKI doc over wire protocol for epoch %v: %v", epoch, err)
+		p.log.Debug("Fetching PKI doc via plain old HTTP.")
+		d, _, err = p.c.cfg.PKIClient.Get(pkiCtx, epoch)
+		select {
+		case <-pkiCtx.Done():
+			// Canceled mid-fetch.
+			return nil, errors.New("error: getDocument was cancelled.")
+		default:
+		}
+		if err == cpki.ErrNoDocument {
+			return nil, ErrConsensusGone
+		} else {
+			p.log.Warning("unkown PKIClient.Get failure: %s", err)
+		}
+		return d, err
+	}
+	if consensusCmd.ErrorCode == commands.ConsensusGone {
+		p.log.Error("received Consensus command with error-code: consensus gone.")
+		return nil, ErrConsensusGone
+	} else if consensusCmd.ErrorCode == commands.ConsensusNotFound {
+		p.log.Error("received Consensus command with error-code: consensus not found.")
+		return nil, ErrConsensusNotFound
+	} else if consensusCmd.ErrorCode == commands.ConsensusOk {
+		p.log.Debug("received Consensus command with error-code: OK.")
+	} else {
+		p.log.Warningf("received Consensus command with unkown error-code: %d", consensusCmd.ErrorCode)
+		return nil, ErrUnknownErrorCode
+	}
+	doc, err := p.c.cfg.PKIClient.Deserialize(consensusCmd.Payload)
+	if err != nil {
+		p.log.Warningf("failure to deserialized a PKI doc: %s")
+		return nil, ErrConsensusDeserialization
+	}
+	d = doc
+	return d, err
 }
 
 func (p *pki) pruneDocuments(now uint64) {
