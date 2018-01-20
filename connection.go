@@ -70,7 +70,7 @@ type connection struct {
 }
 
 type getConsensusCtx struct {
-	replyCh chan *commands.Consensus
+	replyCh chan interface{}
 	epoch   uint64
 	doneFn  func(error)
 }
@@ -347,6 +347,12 @@ func (c *connection) onWireConn(w *wire.Session) {
 	}
 
 	var consensusCtx *getConsensusCtx
+	defer func() {
+		if consensusCtx != nil {
+			consensusCtx.replyCh <- ErrNotConnected
+		}
+	}()
+
 	var fetchDelay time.Duration
 	var selectAt time.Time
 	adjFetchDelay := func() {
@@ -591,7 +597,7 @@ func (c *connection) getConsensus(ctx context.Context, epoch uint64) (*commands.
 	}
 
 	errCh := make(chan error)
-	replyCh := make(chan *commands.Consensus)
+	replyCh := make(chan interface{})
 	c.getConsensusCh <- &getConsensusCtx{
 		replyCh: replyCh,
 		epoch:   epoch,
@@ -613,8 +619,15 @@ func (c *connection) getConsensus(ctx context.Context, epoch uint64) (*commands.
 
 	// Wait for the dispatch to complete.
 	select {
-	case consensusCmd := <-replyCh:
-		return consensusCmd, nil
+	case rawResp := <-replyCh:
+		switch resp := rawResp.(type) {
+		case error:
+			return nil, resp
+		case *commands.Consensus:
+			return resp, nil
+		default:
+			panic("BUG: Worker returned invalid Consensus response")
+		}
 	case <-ctx.Done():
 		// Canceled mid-fetch.
 		return nil, errGetConsensusCanceled
