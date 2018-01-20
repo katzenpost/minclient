@@ -19,6 +19,7 @@ package minclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,13 +30,7 @@ import (
 	"gopkg.in/op/go-logging.v1"
 )
 
-var (
-	ErrConsensusGone            = errors.New("GetConsensus failure: consensus is gone.")
-	ErrConsensusNotFound        = errors.New("GetConsensus failure: consensus not found.")
-	ErrConsensusDeserialization = errors.New("GetConsensus failure: failed to deserialize consensus.")
-	ErrSendGetConsensus         = errors.New("failure sending the GetConsensus wire protocol command.")
-	ErrUnknownErrorCode         = errors.New("received Consensus command with unkown error-code.")
-)
+var errGetConsensusCanceled = errors.New("minclient/pki: consensus fetch canceled")
 
 type pki struct {
 	sync.Mutex
@@ -161,11 +156,15 @@ func (p *pki) worker() {
 				continue
 			}
 
-			d, err := p.getDocument(epoch, pkiCtx)
+			d, err := p.getDocument(pkiCtx, epoch)
 			if err != nil {
 				p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
-				if err == ErrConsensusGone {
+				switch err {
+				case cpki.ErrNoDocument:
 					p.failedFetches[epoch] = err
+				case errGetConsensusCanceled:
+					return
+				default:
 				}
 				continue
 			}
@@ -189,49 +188,52 @@ func (p *pki) worker() {
 	// NOTREACHED
 }
 
-// getDocument either returns the desired PKI document or an error
-func (p *pki) getDocument(epoch uint64, pkiCtx context.Context) (*cpki.Document, error) {
-	p.log.Debug("getDocument")
+func (p *pki) getDocument(ctx context.Context, epoch uint64) (*cpki.Document, error) {
 	var d *cpki.Document
 	var err error
 
-	p.log.Debug("Fetching PKI doc via crypto wire protocol.")
-	consensusCmd, err := p.c.conn.getConsensus(pkiCtx, epoch)
+	p.log.Debug("Fetching PKI doc for epoch %v from Provider.", epoch)
+	resp, err := p.c.conn.getConsensus(ctx, epoch)
+	switch err {
+	case nil:
+	case cpki.ErrNoDocument:
+		return nil, err
+	default:
+		p.log.Debugf("Failed to fetch PKI doc for epoch %v from Provider: %v", epoch, err)
+		return p.getDocumentDirect(ctx, epoch)
+	}
+
+	switch resp.ErrorCode {
+	case commands.ConsensusOk:
+	case commands.ConsensusGone:
+		return nil, cpki.ErrNoDocument
+	default:
+		return nil, fmt.Errorf("minclient/pki: GetConsensus failed: %v", resp.ErrorCode)
+	}
+
+	d, err = p.c.cfg.PKIClient.Deserialize(resp.Payload)
 	if err != nil {
-		p.log.Debugf("Failed to fetch PKI doc over wire protocol for epoch %v: %v", epoch, err)
-		p.log.Debug("Fetching PKI doc via plain old HTTP.")
-		d, _, err = p.c.cfg.PKIClient.Get(pkiCtx, epoch)
-		select {
-		case <-pkiCtx.Done():
-			// Canceled mid-fetch.
-			return nil, errors.New("error: getDocument was cancelled.")
-		default:
-		}
-		if err == cpki.ErrNoDocument {
-			return nil, ErrConsensusGone
-		} else {
-			p.log.Warning("unkown PKIClient.Get failure: %s", err)
-		}
-		return d, err
+		p.log.Errorf("Failed to deserialize consensus received from provider: %v", err)
+		return nil, cpki.ErrNoDocument
 	}
-	if consensusCmd.ErrorCode == commands.ConsensusGone {
-		p.log.Error("received Consensus command with error-code: consensus gone.")
-		return nil, ErrConsensusGone
-	} else if consensusCmd.ErrorCode == commands.ConsensusNotFound {
-		p.log.Error("received Consensus command with error-code: consensus not found.")
-		return nil, ErrConsensusNotFound
-	} else if consensusCmd.ErrorCode == commands.ConsensusOk {
-		p.log.Debug("received Consensus command with error-code: OK.")
-	} else {
-		p.log.Warningf("received Consensus command with unkown error-code: %d", consensusCmd.ErrorCode)
-		return nil, ErrUnknownErrorCode
+	if d.Epoch != epoch {
+		p.log.Errorf("BUG: Provider returned document for incorrect epoch: %v", d.Epoch)
+		return p.getDocumentDirect(ctx, epoch)
 	}
-	doc, err := p.c.cfg.PKIClient.Deserialize(consensusCmd.Payload)
-	if err != nil {
-		p.log.Warningf("failure to deserialized a PKI doc: %s")
-		return nil, ErrConsensusDeserialization
+
+	return d, err
+}
+
+func (p *pki) getDocumentDirect(ctx context.Context, epoch uint64) (*cpki.Document, error) {
+	p.log.Debugf("Fetching PKI doc for epoch %v directly from authority.", epoch)
+
+	d, _, err := p.c.cfg.PKIClient.Get(ctx, epoch)
+	select {
+	case <-ctx.Done():
+		// Canceled mid-fetch.
+		return nil, errGetConsensusCanceled
+	default:
 	}
-	d = doc
 	return d, err
 }
 
