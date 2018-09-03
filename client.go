@@ -105,6 +105,10 @@ type ClientConfig struct {
 	// EnableTimeSync enables the use of skewed remote provider time
 	// instead of system time when available.
 	EnableTimeSync bool
+
+	// InsecureKeyDiscovery enables the automatic retrieval and trust
+	// of recipient identity keys from their provider. Disabled by default.
+	InsecureKeyDiscovery bool
 }
 
 func (cfg *ClientConfig) validate() error {
