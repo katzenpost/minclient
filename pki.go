@@ -98,7 +98,9 @@ func (p *pki) skewedUnixTime() int64 {
 func (p *pki) currentDocument() *cpki.Document {
 	//now, _, _ := epochtime.FromUnix(p.skewedUnixTime())
 	now, _, _ := epochtime.Now()
+	p.log.Debugf("Requesting current document for epoch %d", now)
 	if d, _ := p.docs.Load(now); d != nil {
+		p.log.Debugf("Got document for epoch %d", now)
 		return d.(*cpki.Document)
 	}
 	return nil
@@ -179,6 +181,7 @@ func (p *pki) worker() {
 				}
 				continue
 			}
+			p.log.Debugf("Storing doc for epoch %d", epoch)
 			p.docs.Store(epoch, d)
 			didUpdate = true
 		}
@@ -193,12 +196,14 @@ func (p *pki) worker() {
 			}
 		}
 		if now != lastCallbackEpoch && p.c.cfg.OnDocumentFn != nil {
+			p.log.Debugf("now: %d lastCallbackEpoch %d", now, lastCallbackEpoch)
 			if d, ok := p.docs.Load(now); ok {
 				lastCallbackEpoch = now
 				p.c.cfg.OnDocumentFn(d.(*cpki.Document))
 			}
 		}
 
+		p.log.Debugf("resetting timer")
 		timer.Reset(recheckInterval)
 	}
 
