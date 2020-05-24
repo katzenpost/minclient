@@ -762,8 +762,8 @@ func newConnection(c *Client) *connection {
 
 func init() {
 	if WarpedEpoch == "true" {
-		keepAliveInterval = 30 * time.Second
-		connectTimeout = 10 * time.Second
-		pkiFallbackInterval = 30 * time.Second
+		keepAliveInterval = 2 * time.Second
+		connectTimeout = 2 * time.Second
+		pkiFallbackInterval = 1 * time.Second
 	}
 }
