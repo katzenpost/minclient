@@ -96,7 +96,8 @@ func (p *pki) skewedUnixTime() int64 {
 }
 
 func (p *pki) currentDocument() *cpki.Document {
-	now, _, _ := epochtime.FromUnix(p.skewedUnixTime())
+	//now, _, _ := epochtime.FromUnix(p.skewedUnixTime())
+	now, _, _ := epochtime.Now()
 	if d, _ := p.docs.Load(now); d != nil {
 		return d.(*cpki.Document)
 	}
