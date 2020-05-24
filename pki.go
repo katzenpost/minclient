@@ -128,8 +128,10 @@ func (p *pki) worker() {
 		select {
 		case <-p.HaltCh():
 			p.log.Debugf("Terminating gracefully.")
+			p.log.Debugf("PKI worker terminating")
 			return
 		case <-p.forceUpdateCh:
+			p.log.Debugf("PKI worker force updating")
 		case <-timer.C:
 			timerFired = true
 			p.log.Debugf("PKI timer fired")
@@ -171,6 +173,7 @@ func (p *pki) worker() {
 				case cpki.ErrNoDocument:
 					p.failedFetches[epoch] = err
 				case errGetConsensusCanceled:
+					p.log.Warningf("PKI worker terminating!")
 					return
 				default:
 				}
