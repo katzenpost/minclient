@@ -285,6 +285,6 @@ func newPKI(c *Client) *pki {
 
 func init() {
 	if WarpedEpoch == "true" {
-		recheckInterval = 5 * time.Second
+		recheckInterval = 1 * time.Second
 	}
 }
