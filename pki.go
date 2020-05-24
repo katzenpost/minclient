@@ -132,6 +132,7 @@ func (p *pki) worker() {
 		case <-p.forceUpdateCh:
 		case <-timer.C:
 			timerFired = true
+			p.log.Debugf("PKI timer fired")
 		}
 		if !timerFired && !timer.Stop() {
 			<-timer.C
@@ -142,6 +143,7 @@ func (p *pki) worker() {
 		now, _, till := epochtime.FromUnix(p.skewedUnixTime())
 		epochs = append(epochs, now)
 		if till < nextFetchTill {
+			p.log.Debugf("Time to get next epoch document: %d", now+1)
 			epochs = append(epochs, now+1)
 		}
 
@@ -149,6 +151,7 @@ func (p *pki) worker() {
 		didUpdate := false
 		for _, epoch := range epochs {
 			if _, ok := p.docs.Load(epoch); ok {
+				p.log.Debugf("Already got doc for epoch: %d", epoch)
 				continue
 			}
 
@@ -160,6 +163,7 @@ func (p *pki) worker() {
 				continue
 			}
 
+			p.log.Debugf("Doing fetch for epoch %d", epoch)
 			d, err := p.getDocument(pkiCtx, epoch)
 			if err != nil {
 				p.log.Warningf("Failed to fetch PKI for epoch %v: %v", epoch, err)
