@@ -177,7 +177,7 @@ func (p *pki) worker() {
 		p.pruneFailures(now)
 		if didUpdate {
 			// Prune documents.
-			p.pruneDocuments(now)
+			//p.pruneDocuments(now)
 
 			// Kick the connector iff it is waiting on a PKI document.
 			if p.c.conn != nil {
