@@ -103,6 +103,7 @@ func (p *pki) currentDocument() *cpki.Document {
 		p.log.Debugf("Got document for epoch %d", now)
 		return d.(*cpki.Document)
 	}
+	p.log.Debugf("Failed to get document for %d", now)
 	return nil
 }
 
