@@ -145,8 +145,9 @@ func (p *pki) worker() {
 
 		// Use the skewed time to determine which documents to fetch.
 		epochs := make([]uint64, 0, 2)
-		now, _, till := epochtime.FromUnix(p.skewedUnixTime())
+		now, _, till := epochtime.Now()
 		epochs = append(epochs, now)
+		epochs = append(epochs, now+1) // XXX: why the hell does the below not get called?
 		if till < nextFetchTill {
 			p.log.Debugf("Time to get next epoch document: %d", now+1)
 			epochs = append(epochs, now+1)
