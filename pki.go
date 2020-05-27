@@ -140,7 +140,10 @@ func (p *pki) worker() {
 			p.log.Debugf("PKI timer fired")
 		}
 		if !timerFired && !timer.Stop() {
+			// XXX is it possible that !timer.Stop() and reading the channel blocks?
+			p.log.Debugf("reading timer>C")
 			<-timer.C
+			p.log.Debugf("read timer>C")
 		}
 
 		// Use the skewed time to determine which documents to fetch.
