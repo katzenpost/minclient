@@ -187,16 +187,6 @@ func (c *connection) getDescriptor() error {
 
 func (c *connection) connectWorker() {
 	defer c.log.Debugf("Terminating connect worker.")
-
-	dialCtx, cancelFn := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-c.HaltCh():
-			cancelFn()
-		case <-dialCtx.Done():
-		}
-	}()
-
 	timer := time.NewTimer(pkiFallbackInterval)
 	defer timer.Stop()
 	for {
@@ -223,7 +213,7 @@ func (c *connection) connectWorker() {
 		// Query the PKI for the current descriptor.
 		if err := c.getDescriptor(); err == nil {
 			// Attempt to connect.
-			c.doConnect(dialCtx)
+			c.doConnect()
 		} else if c.c.cfg.OnConnFn != nil {
 			// Can't connect due to lacking descriptor.
 			c.c.cfg.OnConnFn(err)
@@ -239,11 +229,12 @@ func (c *connection) connectWorker() {
 	// NOTREACHED
 }
 
-func (c *connection) doConnect(dialCtx context.Context) {
+func (c *connection) doConnect() {
 	const (
 		retryIncrement = 15 * time.Second
 		maxRetryDelay  = 2 * time.Minute
 	)
+
 
 	dialFn := c.c.cfg.DialContextFn
 	if dialFn == nil {
@@ -299,14 +290,27 @@ func (c *connection) doConnect(dialCtx context.Context) {
 				return
 			}
 
+			// the context should be instantiated... here
+			dialCtx, cancelFn := context.WithCancel(context.Background())
 			c.log.Debugf("Dialing: %v", addrPort)
 			conn, err := dialFn(dialCtx, "tcp", addrPort)
+			go func() {
+				select {
+				case <-c.HaltCh():
+					cancelFn()
+				case <-dialCtx.Done():
+					c.log.Debugf("dialCtx returned error: %s", dialCtx.Err())
+					conn.Close()
+				}
+			}()
+
 			select {
 			case <-c.HaltCh():
 				if conn != nil {
 					conn.Close()
 				}
 				connErr = ErrShutdown
+				cancelFn()
 				return
 			default:
 				if err != nil {
@@ -314,6 +318,7 @@ func (c *connection) doConnect(dialCtx context.Context) {
 					if c.c.cfg.OnConnFn != nil {
 						c.c.cfg.OnConnFn(&ConnectError{Err: err})
 					}
+					cancelFn()
 					continue
 				}
 			}
@@ -324,9 +329,7 @@ func (c *connection) doConnect(dialCtx context.Context) {
 
 			// Re-iterate through the address/ports on a sucessful connect.
 			c.log.Debugf("Connection terminated, will reconnect.")
-
-			// Emit a ConnectError when disconnected.
-			c.onConnStatusChange(ErrNotConnected)
+			cancelFn()
 			break
 		}
 	}
