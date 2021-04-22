@@ -294,15 +294,6 @@ func (c *connection) doConnect() {
 			dialCtx, cancelFn := context.WithCancel(context.Background())
 			c.log.Debugf("Dialing: %v", addrPort)
 			conn, err := dialFn(dialCtx, "tcp", addrPort)
-			go func() {
-				select {
-				case <-c.HaltCh():
-					cancelFn()
-				case <-dialCtx.Done():
-					c.log.Debugf("dialCtx returned error: %s", dialCtx.Err())
-					conn.Close()
-				}
-			}()
 
 			select {
 			case <-c.HaltCh():
@@ -321,6 +312,15 @@ func (c *connection) doConnect() {
 					cancelFn()
 					continue
 				}
+				go func() {
+					select {
+					case <-c.HaltCh():
+						cancelFn()
+					case <-dialCtx.Done():
+						c.log.Debugf("dialCtx returned error: %s", dialCtx.Err())
+						conn.Close()
+					}
+				}()
 			}
 			c.log.Debugf("TCP connection established.")
 
